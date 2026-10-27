@@ -2,6 +2,7 @@
 
 **Data:** 2026-10-19
 **Base:** `docs/ecossistema.md` (as decisões de lá continuam valendo; este documento fecha o "formato exato do protocolo e do manifesto" e o "versionamento" que estavam em aberto).
+**Atualização (2026-10-27):** o serviço sem systemd (subida pelo cliente, retomada pelo próximo cliente e trabalho agendado sem os timers do systemd), pelo princípio "Cada app funciona sozinho" do `ecossistema.md`. O código ainda não faz isso; ver "Serviço sem systemd".
 
 ## Por quê
 
@@ -13,7 +14,7 @@ Todos os apps do Lucerna (`lucerna-notes`, `lucerna-routine`, `lucerna-phone` e 
 - O painel recebe o estado sem perguntar de novo (o serviço manda quando muda).
 - O app pede coisas ao shell (barra, não perturbe, abrir a TUI) sem conhecer o shell por dentro.
 - O shell descobre os apps instalados e carrega o painel certo, recusando com aviso o que não for compatível.
-- O serviço sobe quando alguém conecta e sai sozinho quando ninguém usa.
+- O serviço sobe quando alguém conecta e sai sozinho quando ninguém usa, com ou sem systemd.
 - Um app ganha a linha de comando de graça (`lucerna-routine add "estudar amanhã 19h"`), pelo mesmo protocolo.
 - Um app de exemplo mínimo prova tudo isso de ponta a ponta.
 
@@ -29,6 +30,7 @@ Todos os apps do Lucerna (`lucerna-notes`, `lucerna-routine`, `lucerna-phone` e 
 - Um protocolo "esperto" que esconda o que trafega: tem de dar para ler as mensagens no terminal.
 - O shell precisar de código específico de cada app (fora o painel QML que o próprio app traz).
 - Um app que só funciona com o shell: sem o shell, a TUI e a linha de comando continuam completas.
+- Um app que só funciona com systemd: sem ele, o cliente sobe o serviço e o trabalho agendado tem outro caminho (ver "Serviço sem systemd").
 
 ## Conversa: JSON-RPC 2.0 sobre socket Unix
 
@@ -155,16 +157,41 @@ Os crates do SDK seguem semver próprio; a versão do protocolo que cada versão
 
 ## Serviço sob demanda
 
-- **Ativação:** cada app instala `lucerna-<app>.socket` e `lucerna-<app>.service` do systemd do usuário. O socket fica em `%t/lucerna/<app>.sock`; o systemd passa o socket ao serviço (`LISTEN_FDS`). O SDK traz o código para receber esse socket — e, para desenvolvimento, para criar o socket sozinho quando o serviço é rodado à mão.
-- **Saída por ociosidade:** o serviço sai depois de **60 s** sem clientes conectados e sem trabalho pendente (valor padrão do SDK, configurável por app). "Trabalho pendente" é decidido pelo app (um timer de foco rodando, um item na barra, uma transferência do celular). O systemd sobe de novo na próxima conexão.
-- **Trabalho agendado:** o SDK registra um timer do systemd do usuário que sobe o serviço no horário; o serviço faz o trabalho (o lembrete), cancela o timer e volta a sair. Decisão do construtor: um arquivo de unidade `lucerna-<app>_<nome>.timer` (o `_` separa o id do app do nome do timer, que não o contêm, e evita colisão entre, por exemplo, o app `a-b` com o timer `c` e o app `a` com o timer `b-c`), com `OnCalendar` em UTC e `Unit=lucerna-<app>.service`, ligado com `systemctl --user`. Persistente (sobrevive a reinício): em `$XDG_CONFIG_HOME/systemd/user/` com `Persistent=true`, `enable` e `restart`; não persistente: em `$XDG_RUNTIME_DIR/systemd/user/` com `restart`. O `lucerna-<app>.service` precisa estar instalado (o SDK confere antes e recusa); o horário precisa estar ao menos 2 s no futuro; trocar a persistência com o mesmo nome apaga o arquivo da outra pasta; uma falha no meio desfaz o que foi feito.
+- **Ativação:** cada app instala `lucerna-<app>.socket` e `lucerna-<app>.service` do systemd do usuário. O socket fica em `%t/lucerna/<app>.sock`; o systemd passa o socket ao serviço (`LISTEN_FDS`). O SDK traz o código para receber esse socket — e, para desenvolvimento e para quando não há systemd, para criar o socket sozinho quando o serviço é rodado à mão.
+- **Saída por ociosidade:** o serviço sai depois de **60 s** sem clientes conectados e sem trabalho pendente (valor padrão do SDK, configurável por app). "Trabalho pendente" é decidido pelo app (um timer de foco rodando, um item na barra, uma transferência do celular). O systemd sobe de novo na próxima conexão; sem systemd, o próximo cliente o sobe (ver "Serviço sem systemd").
+- **Queda:** com systemd, a unidade tem `Restart=on-failure`. Sem systemd, ninguém reinicia: o próximo cliente que conectar sobe o serviço de novo, pelo mesmo caminho da subida.
+- **Trabalho agendado:** o SDK registra um timer do systemd do usuário que sobe o serviço no horário; o serviço faz o trabalho (o lembrete), cancela o timer e volta a sair. Decisão do construtor: um arquivo de unidade `lucerna-<app>_<nome>.timer` (o `_` separa o id do app do nome do timer, que não o contêm, e evita colisão entre, por exemplo, o app `a-b` com o timer `c` e o app `a` com o timer `b-c`), com `OnCalendar` em UTC e `Unit=lucerna-<app>.service`, ligado com `systemctl --user`. Persistente (sobrevive a reinício): em `$XDG_CONFIG_HOME/systemd/user/` com `Persistent=true`, `enable` e `restart`; não persistente: em `$XDG_RUNTIME_DIR/systemd/user/` com `restart`. O `lucerna-<app>.service` precisa estar instalado (o SDK confere antes e recusa); o horário precisa estar ao menos 2 s no futuro; trocar a persistência com o mesmo nome apaga o arquivo da outra pasta; uma falha no meio desfaz o que foi feito. Sem o `systemctl --user` ou sem a unidade instalada, o trabalho agendado vai pelo agendador local (ver "Serviço sem systemd"), em vez de ser recusado.
+
+## Serviço sem systemd
+
+Vale para todo app e para o `lucernad`, pelo princípio "Cada app funciona sozinho" do `ecossistema.md`. O protocolo não muda: o que muda é quem sobe o serviço e quem o acorda no horário.
+
+**Subida pelo cliente** (o molde é o do spec do explorador, no `lucerna-files`):
+
+1. O cliente (linha de comando, TUI ou GUI) conecta ao `<app>.sock`. Com a unidade do systemd instalada, a própria conexão sobe o serviço, como antes.
+2. Sem ninguém ouvindo (o socket não existe ou recusa a conexão: sem systemd, unidade não instalada, desenvolvimento), o cliente roda `lucerna-<app> serve` solto: o mesmo binário (o executável atual), num grupo de sessão novo, com a entrada vazia e a saída num log em `$XDG_STATE_HOME/lucerna/<app>/serve.log`. Depois tenta conectar por até **2 s**, com espera crescente. Dois clientes fazendo isso juntos: o segundo `serve` não pega o lock do socket e sai (`AlreadyRunning`, que já existe no SDK), e os dois clientes conectam no primeiro.
+3. Sem conseguir em 2 s: a linha de comando sai com o código `2` ("sem serviço") e diz o porquê, com o caminho do log; a TUI e a GUI mostram a causa e seguem com o que não depende do serviço, se houver.
+
+O serviço subido assim cria o socket à mão (o caminho de desenvolvimento que já existe), sai por ociosidade do mesmo jeito e apaga o socket ao sair.
+
+**Retomada:** sem systemd, uma queda só é notada pelo próximo cliente, que sobe o serviço de novo (passo 2). O app guarda o que precisa sobreviver a uma queda nos dados dele; ao subir, o serviço confere o que estava em andamento ou venceu.
+
+**O painel** é um cliente como os outros: com a conexão recusada, o host de painéis do shell roda `lucerna-<app> serve` pelo mesmo caminho (o binário é o `app.tui` do manifesto, que é o próprio `lucerna-<app>`) e reconecta com a mesma espera. Isso é do lado do shell.
+
+**Trabalho agendado sem os timers do systemd: o agendador local.**
+
+- O SDK escolhe o agendador ao subir: o do systemd quando o `systemctl --user` responde e a unidade `lucerna-<app>.service` carrega; senão, o **agendador local**. A interface (`Scheduler`: `schedule` e `cancel`) é a mesma, e o app não precisa saber qual está em uso.
+- O agendador local guarda os horários no próprio serviço e, no horário, avisa o app pelo mesmo caminho do timer do systemd (o app faz o trabalho vencido e chama `cancel`). **Cada timer marcado conta como trabalho pendente**, então o serviço não sai por ociosidade enquanto houver algo agendado: ele fica rodando até o próximo horário.
+- O app guarda o que agendou nos próprios dados (a rotina já guarda os lembretes no banco). Ao subir, por qualquer caminho, o serviço confere o que venceu enquanto estava parado, faz na hora e reagenda o resto. Isso faz o papel do `Persistent=true`.
+- **Limite:** sem systemd, depois de reiniciar o computador ou sair da sessão, nada sobe o serviço sozinho; o trabalho agendado só acontece quando algo o subir (um cliente, por exemplo). Para cobrir o login, o agendador local, enquanto houver timer **persistente** marcado, mantém uma entrada de início automático do XDG em `$XDG_CONFIG_HOME/autostart/lucerna-<app>.desktop` (`Exec=lucerna-<app> serve`, `NoDisplay=true`) e a apaga quando não há mais nenhum; os timers não persistentes não a criam. O KDE, o GNOME e o XFCE leem essa pasta; um compositor que não lê (o Hyprland sem systemd, por exemplo) precisa de uma linha como `exec-once = lucerna-<app> serve`, e o app diz isso ao usuário.
+- O serviço subido no login sem nada vencido nem agendado sai por ociosidade, como sempre.
 
 ## Linha de comando e binários
 
 - **Um binário por app** (decisão do construtor do documento): `lucerna-<app>` é tudo. Sem argumentos, abre a TUI; com um subcomando, vira cliente da linha de comando; com o subcomando oculto `serve`, é o serviço (o `ExecStart` da unidade do systemd é `lucerna-<app> serve`); com o subcomando oculto `tui <args…>`, abre a TUI com esses argumentos (é o que o shell roda no `tui.open`; depois do primeiro argumento, tudo vai para a TUI, mesmo o que começa com `-`). `lucerna-<app>` sem nada é o mesmo que `lucerna-<app> tui` sem argumentos (decisão da revisão final: um subcomando explícito evita que um argumento da TUI, como `t_42`, seja lido como um subcomando desconhecido). O `lucerna-cli` e o `lucerna-service` se compõem num `main` só, e o `lucerna-hello` mostra esse molde, que todos os apps copiam.
 - O SDK traz o esqueleto da linha de comando: com um subcomando, o binário conecta, faz o aperto de mão (`client` = `cli`), chama o método e imprime o resultado.
 - Os subcomandos são declarados pelo app (nome, ajuda em português, argumentos) e cada um vira um método do protocolo. Ex.: `lucerna-routine add "estudar amanhã 19h"` → `tasks.add {"text":"estudar amanhã 19h"}`; `lucerna-routine focus start --tag estudo` → `focus.start {...}`.
-- Saída legível por padrão; `--json` imprime o `result` cru (para scripts). Código de saída `0` no sucesso, `1` com erro do app, `2` sem conseguir falar com o serviço e `64` com uso errado da linha de comando (decisão do plano de implementação: o `2` padrão do clap colidiria com "sem serviço").
+- Saída legível por padrão; `--json` imprime o `result` cru (para scripts). Código de saída `0` no sucesso, `1` com erro do app, `2` sem conseguir falar com o serviço (nem subi-lo em 2 s, ver "Serviço sem systemd") e `64` com uso errado da linha de comando (decisão do plano de implementação: o `2` padrão do clap colidiria com "sem serviço").
 - Subcomandos comuns que todo app ganha: `status` (o retrato dos tópicos) e `watch <tópico>` (acompanha as mudanças no terminal, útil para depurar). `status`, `watch`, `serve` e `tui` são nomes reservados: um app não declara subcomando com eles.
 
 ## Crates do `lucerna-sdk`
@@ -174,10 +201,10 @@ Um workspace Cargo (edição 2024, licença GPL-3.0), publicado no crates.io:
 | Crate | Conteúdo |
 | --- | --- |
 | `lucerna-protocol` | os tipos das mensagens (JSON-RPC, `hello`, `state`, erros), a versão e os nomes reservados; sem I/O |
-| `lucerna-ipc` | cliente e servidor do socket (assíncronos), o aperto de mão, as assinaturas com retrato e `seq`, o limite de tamanho |
-| `lucerna-service` | o esqueleto do serviço: socket do systemd, saída por ociosidade, trabalho pendente, timers agendados, a conexão ao `shell.sock` (barra, não perturbe, `tui.open`, `panel.open`) |
+| `lucerna-ipc` | cliente e servidor do socket (assíncronos), o aperto de mão, as assinaturas com retrato e `seq`, o limite de tamanho, a subida do serviço pelo cliente sem systemd |
+| `lucerna-service` | o esqueleto do serviço: socket do systemd (ou criado à mão), saída por ociosidade, trabalho pendente, timers agendados (do systemd ou o agendador local), a conexão ao `shell.sock` (barra, não perturbe, `tui.open`, `panel.open`) |
 | `lucerna-cli` | o esqueleto da linha de comando (subcomandos → métodos, `status`, `watch`, `--json`, códigos de saída) |
-| `lucerna-paths` | as pastas de "Pastas e dados" do `ecossistema.md` |
+| `lucerna-paths` | as pastas de "Pastas e dados" do `ecossistema.md`, mais a de estado (`$XDG_STATE_HOME`, para o log do serviço subido pelo cliente) |
 | `lucerna-manifest` | os tipos do manifesto, a leitura, a validação e a regra de compatibilidade de `api` |
 
 E o app de exemplo **`lucerna-hello`** (no mesmo repositório, não publicado): um contador com um tópico comum (`counter`) e um contínuo (`ticks`, para exercitar o "só o último"), três métodos (`counter.add`, `counter.reset` e `quiet.set`, que liga e desliga o não perturbe, para o teste do `shell.sock`; o terceiro é decisão do plano de implementação), um item na barra com o valor, a linha de comando (`lucerna-hello add 3`, `status`, `watch counter`), as unidades do systemd e o manifesto **sem painel**. O painel QML do `lucerna-hello` fica para o spec do lado do shell, quando a API de componentes `1.0` existir (decisão do construtor do documento: escrever o painel agora seria contra uma API que ainda não foi definida).
@@ -189,16 +216,18 @@ Este documento define o contrato; a implementação no shell é um projeto do `l
 - um cliente QML do protocolo (um `Socket` do `Quickshell.Io` com o aperto de mão e as assinaturas), exposto aos painéis dos apps;
 - o servidor do `shell.sock` com os métodos da tabela acima;
 - o host de painéis: ler os manifestos, checar `schema` e `api`, carregar `Panel.qml`/`Card.qml`, registrar os atalhos sugeridos nas Configurações;
+- com a conexão ao serviço recusada, subir o serviço (`lucerna-<app> serve`) como os outros clientes (ver "Serviço sem systemd");
 - a API de componentes versionada (`1.0`), com os widgets e o tema do Lucerna.
 
 A ordem combinada: o SDK primeiro (com o `lucerna-hello` testável sem shell, pela linha de comando), depois o espectro do `lucernad` como primeiro uso real, e o lado do shell quando o primeiro painel de app for necessário.
 
-O `lucernad` segue o mesmo modelo (serviço por socket do systemd, saída por ociosidade, tópicos, manifesto sem painel): o shell é o cliente dele, e o espectro é um tópico contínuo, produzido só enquanto o shell assina. A forma do `lucernad` (um binário com módulos ou vários) continua em aberto no `ecossistema.md`, para o spec próprio dele.
+O `lucernad` segue o mesmo modelo (serviço por socket do systemd ou subido pelo cliente, saída por ociosidade, tópicos, manifesto sem painel): o shell é o cliente dele, e o espectro é um tópico contínuo, produzido só enquanto o shell assina. A forma do `lucernad` (um binário com módulos ou vários) continua em aberto no `ecossistema.md`, para o spec próprio dele.
 
 ## Testes
 
 - Unidade em cada crate (serialização das mensagens, a regra de compatibilidade de versão, o enquadramento por linha com mensagens quebradas e grandes, os caminhos XDG, a validação do manifesto).
 - Integração: o `lucerna-hello` de ponta a ponta num socket temporário — aperto de mão, versão incompatível, pedido, assinatura com retrato e mudanças, dois clientes ao mesmo tempo, um cliente lento num tópico contínuo (recebe só o último, sem fila crescer), saída por ociosidade, a linha de comando com `--json` e os códigos de saída, o `shell.sock` simulado (barra e não perturbe desfeitos quando a conexão fecha, reaplicados quando o shell volta).
+- Sem systemd: a linha de comando sobe o `lucerna-hello serve` quando não há socket; dois clientes ao mesmo tempo acabam num serviço só; sem conseguir em 2 s, código `2`; depois de matar o serviço, o próximo cliente o sobe de novo; o agendador local dispara no horário, segura a ociosidade enquanto há timer, cria e apaga a entrada de início automático só para os persistentes, e o trabalho vencido com o serviço parado sai ao subir. O CI roda tudo isso sem systemd de usuário.
 - CI no GitHub com os mesmos critérios do `lucerna-shell`: `fmt`, `clippy` sem avisos, testes, e checks obrigatórios no ruleset quando o CI existir.
 
 ## O que fica para o construtor
