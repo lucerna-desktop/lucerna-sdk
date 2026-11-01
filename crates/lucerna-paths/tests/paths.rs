@@ -267,3 +267,68 @@ fn socket_path_longer_than_sun_path_is_an_error() {
         Err(PathsError::SocketPathTooLong { len: 108, .. })
     ));
 }
+
+#[test]
+fn state_and_autostart_paths() {
+    let p = AppPaths::new("routine", &env("/home/u")).unwrap();
+    assert_eq!(
+        p.state_dir().unwrap(),
+        PathBuf::from("/home/u/.local/state/lucerna/routine")
+    );
+    assert_eq!(
+        p.serve_log().unwrap(),
+        PathBuf::from("/home/u/.local/state/lucerna/routine/serve.log")
+    );
+    assert_eq!(
+        p.autostart_file().unwrap(),
+        PathBuf::from("/home/u/.config/autostart/lucerna-routine.desktop")
+    );
+    let mut e = env("/home/u");
+    e.xdg_state_home = Some("/estado".into());
+    e.xdg_config_home = Some("/cfg".into());
+    let p = AppPaths::new("routine", &e).unwrap();
+    assert_eq!(
+        p.serve_log().unwrap(),
+        PathBuf::from("/estado/lucerna/routine/serve.log")
+    );
+    assert_eq!(
+        p.autostart_file().unwrap(),
+        PathBuf::from("/cfg/autostart/lucerna-routine.desktop")
+    );
+    e.xdg_state_home = Some("relativo".into());
+    assert_eq!(
+        AppPaths::new("a", &e).unwrap().state_dir().unwrap(),
+        PathBuf::from("/home/u/.local/state/lucerna/a")
+    );
+    let sem_home = Env::default();
+    assert!(matches!(
+        AppPaths::new("a", &sem_home).unwrap().serve_log(),
+        Err(PathsError::NoHome)
+    ));
+}
+
+#[test]
+fn state_home_is_read_from_the_environment() {
+    let e = Env::from_lookup(|n| (n == "XDG_STATE_HOME").then(|| "/s".into()));
+    assert_eq!(e.xdg_state_home, Some(PathBuf::from("/s")));
+    let e = Env::from_lookup(|n| (n == "XDG_STATE_HOME").then(|| "".into()));
+    assert_eq!(e.xdg_state_home, None);
+}
+
+#[test]
+fn vars_lists_only_what_is_set() {
+    let e = Env {
+        home: Some("/h".into()),
+        xdg_runtime_dir: Some("/run/user/1".into()),
+        xdg_state_home: Some("/s".into()),
+        ..Env::default()
+    };
+    assert_eq!(
+        e.vars(),
+        vec![
+            ("HOME", PathBuf::from("/h")),
+            ("XDG_STATE_HOME", PathBuf::from("/s")),
+            ("XDG_RUNTIME_DIR", PathBuf::from("/run/user/1"))
+        ]
+    );
+}
