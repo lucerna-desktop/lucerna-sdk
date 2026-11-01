@@ -452,6 +452,10 @@ impl CliApp {
             }
             ClientError::Closed => self.no_service(err, "o serviço fechou a conexão.", json),
             ClientError::Timeout => self.no_service(err, "tempo esgotado.", json),
+            // Provisório: a Tarefa 3 dá a cada um a sua mensagem.
+            ClientError::NotStarted { .. } | ClientError::Spawn { .. } => {
+                self.no_service(err, &e.to_string(), json)
+            }
             // No aperto de mão (versão incompatível, socket de outro app): não
             // dá para falar com este serviço.
             ClientError::Rpc(e) if matches!(stage, Stage::Connect(_)) => {
