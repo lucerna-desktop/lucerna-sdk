@@ -9,9 +9,11 @@
 //! - na barra do shell, o item `counter` com o valor (some quando zera).
 //!
 //! O lembrete é o molde do trabalho agendado: o horário fica guardado em
-//! `reminder.json`, na pasta de dados, e o agendador do serviço (o do systemd
-//! ou o local) acorda o serviço na hora; ao subir, o serviço confere o que
-//! venceu com ele parado.
+//! `reminder.json` e o agendador do serviço (o do systemd ou o local) acorda o
+//! serviço na hora; ao subir, o serviço confere o que venceu com ele parado.
+//! O persistente fica na pasta de dados e sobrevive a reiniciar; o outro fica
+//! em `$XDG_RUNTIME_DIR/lucerna/hello`, que some no logout e ao reiniciar
+//! (como o timer não persistente do systemd).
 
 use std::fs;
 use std::io;
@@ -41,8 +43,12 @@ const TICK: Duration = Duration::from_millis(1);
 /// Nome do timer do lembrete (unidade `lucerna-hello_reminder.timer` no systemd).
 const REMINDER_TIMER: &str = "reminder";
 
-/// Arquivo do lembrete, na pasta de dados: `{"at": u64, "persistent": bool}`.
+/// Arquivo do lembrete: `{"at": u64, "persistent": bool}`. O persistente fica
+/// na pasta de dados; o outro, em `$XDG_RUNTIME_DIR/lucerna/hello`.
 const REMINDER_FILE: &str = "reminder.json";
+
+/// O mínimo de segundos do `reminder.set`: o agendador recusa `at <= agora + 1`.
+const REMINDER_MIN_SECS: u64 = 2;
 
 /// O serviço montado e os tópicos dele.
 ///
@@ -137,24 +143,49 @@ struct Reminder {
 }
 
 impl Reminder {
-    /// `<pasta de dados>/reminder.json`.
-    fn file(&self) -> Result<PathBuf, String> {
+    /// `<pasta de dados>/reminder.json` (persistente) ou
+    /// `$XDG_RUNTIME_DIR/lucerna/hello/reminder.json` (não persistente).
+    fn file(&self, persistent: bool) -> Result<PathBuf, String> {
         AppPaths::new(APP, &self.env)
-            .and_then(|p| p.data_dir())
+            .and_then(|p| {
+                if persistent {
+                    p.data_dir()
+                } else {
+                    p.runtime_dir().map(|d| d.join(APP))
+                }
+            })
             .map(|d| d.join(REMINDER_FILE))
             .map_err(|e| e.to_string())
     }
 
-    /// Lê o arquivo; ausente ou ilegível = sem lembrete.
-    fn read_file(&self) -> Option<(u64, bool)> {
-        let bytes = fs::read(self.file().ok()?).ok()?;
-        let v: Value = serde_json::from_slice(&bytes).ok()?;
-        Some((v.get("at")?.as_u64()?, v.get("persistent")?.as_bool()?))
+    /// Lê um dos dois arquivos, com a hora em que foi gravado; ausente ou
+    /// ilegível = sem lembrete.
+    fn read_one(&self, persistent: bool) -> Option<(u64, bool, SystemTime)> {
+        let file = self.file(persistent).ok()?;
+        let written = fs::metadata(&file).and_then(|m| m.modified()).ok()?;
+        let v: Value = serde_json::from_slice(&fs::read(&file).ok()?).ok()?;
+        Some((
+            v.get("at")?.as_u64()?,
+            v.get("persistent")?.as_bool()?,
+            written,
+        ))
     }
 
-    /// Grava o arquivo (por um temporário e `rename`: nunca fica pela metade).
+    /// O lembrete guardado. Só existe um por vez; se os dois arquivos
+    /// existirem (o serviço caiu entre gravar um e apagar o outro), vale o
+    /// gravado por último.
+    fn read_file(&self) -> Option<(u64, bool)> {
+        match (self.read_one(true), self.read_one(false)) {
+            (Some(p), Some(n)) => Some(if n.2 > p.2 { n } else { p }),
+            (p, n) => p.or(n),
+        }
+        .map(|(at, persistent, _)| (at, persistent))
+    }
+
+    /// Grava o arquivo da persistência certa (por um temporário e `rename`:
+    /// nunca fica pela metade) e apaga o da outra.
     fn write_file(&self, at: u64, persistent: bool) -> Result<(), String> {
-        let file = self.file()?;
+        let file = self.file(persistent)?;
         let write = || -> io::Result<()> {
             if let Some(dir) = file.parent() {
                 fs::create_dir_all(dir)?;
@@ -166,18 +197,26 @@ impl Reminder {
             )?;
             fs::rename(&tmp, &file)
         };
-        write().map_err(|e| e.to_string())
+        write().map_err(|e| e.to_string())?;
+        self.remove_one(!persistent);
+        Ok(())
     }
 
-    /// Apaga o arquivo; não é erro se ele não existir.
-    fn remove_file(&self) {
-        if let Ok(file) = self.file() {
+    /// Apaga um dos dois arquivos; não é erro se ele não existir.
+    fn remove_one(&self, persistent: bool) {
+        if let Ok(file) = self.file(persistent) {
             match fs::remove_file(&file) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => eprintln!("Não deu para apagar {}: {e}", file.display()),
             }
         }
+    }
+
+    /// Apaga os dois arquivos.
+    fn remove_file(&self) {
+        self.remove_one(true);
+        self.remove_one(false);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, ReminderState> {
@@ -190,18 +229,27 @@ impl Reminder {
         self.topic.publish(new.to_json());
     }
 
-    /// Marca o lembrete para `at`.
-    fn set(&self, at: u64, persistent: bool) -> Result<Value, RpcError> {
+    /// Marca o lembrete para daqui a `secs` segundos (`secs` ≥
+    /// [`REMINDER_MIN_SECS`], conferido por quem chama).
+    fn set(&self, secs: u64, persistent: bool) -> Result<Value, RpcError> {
         let mut state = self.lock();
-        let spec = TimerSpec {
-            name: REMINDER_TIMER.into(),
-            at_unix: at,
-            persistent,
+        let schedule = || {
+            let at = now().saturating_add(secs);
+            let spec = TimerSpec {
+                name: REMINDER_TIMER.into(),
+                at_unix: at,
+                persistent,
+            };
+            self.timers.schedule(&spec).map(|()| at)
         };
-        self.timers.schedule(&spec).map_err(|e| match e {
-            ScheduleError::InPast => {
-                RpcError::app(2, "O lembrete precisa ser para daqui a 2 s ou mais.")
-            }
+        // Com `secs` ≥ 2, o `InPast` só vem de o segundo virar entre a conta e
+        // a checagem do agendador: conta de novo uma vez.
+        let at = match schedule() {
+            Err(ScheduleError::InPast) => schedule(),
+            r => r,
+        }
+        .map_err(|e| match e {
+            ScheduleError::InPast => reminder_too_soon(),
             e => RpcError::app(3, e.to_string()),
         })?;
         if let Err(e) = self.write_file(at, persistent) {
@@ -306,6 +354,14 @@ impl Reminder {
     }
 }
 
+/// O erro de um lembrete para menos de [`REMINDER_MIN_SECS`] segundos.
+fn reminder_too_soon() -> RpcError {
+    RpcError::app(
+        2,
+        format!("O lembrete precisa ser para daqui a {REMINDER_MIN_SECS} s ou mais."),
+    )
+}
+
 /// Lê o campo `name` de `params` com `get`; ausente ou de outro tipo dá `-32602`.
 fn param<T>(
     params: &Option<Value>,
@@ -395,8 +451,10 @@ pub fn hello(env: &Env) -> Hello {
         let r = r.clone();
         async move {
             let (secs, persistent) = args?;
-            let at = now().saturating_add(secs);
-            blocking(&r, move |r| r.set(at, persistent))
+            if secs < REMINDER_MIN_SECS {
+                return Err(reminder_too_soon());
+            }
+            blocking(&r, move |r| r.set(secs, persistent))
                 .await
                 .unwrap_or_else(|| Err(RpcError::app(3, "O lembrete não foi marcado.")))
         }

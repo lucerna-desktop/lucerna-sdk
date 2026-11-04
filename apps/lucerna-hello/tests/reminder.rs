@@ -20,13 +20,23 @@ fn now() -> u64 {
         .as_secs()
 }
 
-/// `reminder.json` na pasta de dados do hello.
+/// `reminder.json` do lembrete persistente, na pasta de dados do hello.
 fn reminder_file(env: &Env) -> PathBuf {
     AppPaths::new("hello", env)
         .unwrap()
         .data_dir()
         .unwrap()
         .join("reminder.json")
+}
+
+/// `reminder.json` do lembrete não persistente, em
+/// `$XDG_RUNTIME_DIR/lucerna/hello` (some no logout e ao reiniciar).
+fn runtime_reminder_file(env: &Env) -> PathBuf {
+    AppPaths::new("hello", env)
+        .unwrap()
+        .runtime_dir()
+        .unwrap()
+        .join("hello/reminder.json")
 }
 
 /// A entrada de início automático do hello.
@@ -37,9 +47,14 @@ fn autostart_file(env: &Env) -> PathBuf {
         .unwrap()
 }
 
-/// Lê o `reminder.json`.
+/// Lê o `reminder.json` em `file`.
+fn read_json(file: &std::path::Path) -> Value {
+    serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap()
+}
+
+/// Lê o `reminder.json` do lembrete persistente.
 fn read_file(env: &Env) -> Value {
-    serde_json::from_slice(&std::fs::read(reminder_file(env)).unwrap()).unwrap()
+    read_json(&reminder_file(env))
 }
 
 /// Espera, em até `secs` segundos, um estado do `reminder` que satisfaça `ok`.
@@ -81,6 +96,7 @@ async fn reminder_fires_and_frees_the_service() {
         json!({"at": null, "persistent": false, "last_fired": at})
     );
     assert!(!reminder_file(&r.env).exists());
+    assert!(!runtime_reminder_file(&r.env).exists());
     assert!(!autostart_file(&r.env).exists());
     r.stop().await;
 }
@@ -124,7 +140,7 @@ async fn pending_reminder_is_scheduled_again_on_start() {
     let dir = tempfile::tempdir().unwrap();
     let env = common::temp_env(dir.path());
     let at = now() + 3600;
-    let file = reminder_file(&env);
+    let file = runtime_reminder_file(&env);
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, json!({"at": at, "persistent": false}).to_string()).unwrap();
     let r = start_in(dir, None).await;
@@ -136,7 +152,7 @@ async fn pending_reminder_is_scheduled_again_on_start() {
     );
     let res = c.call("reminder.cancel", None).await.unwrap();
     assert_eq!(res, json!({}));
-    assert!(!reminder_file(&r.env).exists());
+    assert!(!runtime_reminder_file(&r.env).exists());
     let s = wait_state(&c, 2, |d| d["at"].is_null()).await;
     assert_eq!(
         s,
@@ -178,6 +194,86 @@ async fn bad_reminders() {
         other => panic!("esperava -32602: {other:?}"),
     }
     assert!(!reminder_file(&r.env).exists());
+    assert!(!runtime_reminder_file(&r.env).exists());
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn two_seconds_is_accepted() {
+    // O mínimo vale mesmo quando o segundo vira no meio (o `set` conta de novo).
+    let r = start(None).await;
+    let c = r.client().await;
+    for _ in 0..5 {
+        let res = c.call("reminder.set", Some(json!({"in": 2}))).await;
+        assert!(res.is_ok(), "{res:?}");
+        c.call("reminder.cancel", None).await.unwrap();
+    }
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn reminder_file_location_follows_persistence() {
+    let r = start(None).await;
+    // Não persistente: na pasta de runtime, que some ao reiniciar.
+    let at = set(&r, json!({"in": 3600})).await;
+    assert_eq!(
+        read_json(&runtime_reminder_file(&r.env)),
+        json!({"at": at, "persistent": false})
+    );
+    assert!(!reminder_file(&r.env).exists());
+    // Persistente: na pasta de dados; o outro arquivo some.
+    let at = set(&r, json!({"in": 3600, "persistent": true})).await;
+    assert_eq!(read_file(&r.env), json!({"at": at, "persistent": true}));
+    assert!(!runtime_reminder_file(&r.env).exists());
+    // E de volta.
+    let at = set(&r, json!({"in": 3600})).await;
+    assert_eq!(
+        read_json(&runtime_reminder_file(&r.env)),
+        json!({"at": at, "persistent": false})
+    );
+    assert!(!reminder_file(&r.env).exists());
+    let c = r.client().await;
+    c.call("reminder.cancel", None).await.unwrap();
+    assert!(!runtime_reminder_file(&r.env).exists());
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn later_written_file_wins_on_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = common::temp_env(dir.path());
+    let (old, new) = (now() + 3600, now() + 7200);
+    let persistent = reminder_file(&env);
+    std::fs::create_dir_all(persistent.parent().unwrap()).unwrap();
+    std::fs::write(
+        &persistent,
+        json!({"at": old, "persistent": true}).to_string(),
+    )
+    .unwrap();
+    let file = std::fs::File::options()
+        .write(true)
+        .open(&persistent)
+        .unwrap();
+    file.set_modified(SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
+    drop(file);
+    let runtime = runtime_reminder_file(&env);
+    std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
+    std::fs::write(
+        &runtime,
+        json!({"at": new, "persistent": false}).to_string(),
+    )
+    .unwrap();
+    let r = start_in(dir, None).await;
+    let c = r.client().await;
+    let states = c.subscribe(&["reminder"]).await.unwrap();
+    assert_eq!(
+        states[0].data,
+        json!({"at": new, "persistent": false, "last_fired": null})
+    );
+    c.call("reminder.cancel", None).await.unwrap();
+    assert!(!persistent.exists());
+    assert!(!runtime.exists());
     r.stop().await;
 }
 
