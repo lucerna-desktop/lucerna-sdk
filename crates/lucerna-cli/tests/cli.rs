@@ -706,6 +706,46 @@ async fn spawns_the_program_and_reaches_the_service() {
 }
 
 #[tokio::test]
+async fn spawned_service_sees_exactly_the_env() {
+    // Sem `HOME` nem `XDG_CONFIG_HOME` no `Env`, o filho não os herda do
+    // processo do teste (que tem `HOME`).
+    let t = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(t.path().join("run/lucerna")).unwrap();
+    let env = Env {
+        xdg_runtime_dir: Some(t.path().join("run")),
+        xdg_state_home: Some(t.path().join("state")),
+        ..Env::default()
+    };
+    let marca = t.path().join("marca");
+    let prog = script(
+        t.path(),
+        "demo",
+        &format!(
+            "echo \"${{HOME-sem}} ${{XDG_CONFIG_HOME-sem}} $XDG_STATE_HOME\" > '{}'\n",
+            marca.display()
+        ),
+    );
+    let dir = t.path().to_path_buf();
+    let m = marca.clone();
+    let srv = tokio::spawn(async move {
+        while std::fs::read_to_string(&m).map_or(true, |s| !s.ends_with('\n')) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let (_env, topic, handle) = service(&dir).await;
+        (topic, handle)
+    });
+    let a = app().spawn(Spawn::Program(prog));
+    let (code, _, err) = run_with(&a, &["demo", "add", "1"], &env).await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&marca).unwrap(),
+        format!("sem sem {}\n", t.path().join("state").display())
+    );
+    let (_topic, handle) = srv.await.unwrap();
+    handle.abort();
+}
+
+#[tokio::test]
 async fn program_that_never_serves_exits_2_with_the_log() {
     let t = tempfile::tempdir().unwrap();
     let env = env_in(t.path());

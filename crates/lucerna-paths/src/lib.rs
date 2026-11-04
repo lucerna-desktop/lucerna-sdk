@@ -38,6 +38,16 @@ pub struct Env {
 }
 
 impl Env {
+    /// Os nomes das variáveis que um `Env` guarda, na ordem de [`Env::vars`].
+    pub const NAMES: [&'static str; 6] = [
+        "HOME",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+    ];
+
     /// Lê as variáveis do processo; variáveis vazias contam como ausentes.
     pub fn from_process() -> Env {
         Env::from_lookup(|name| std::env::var_os(name))
@@ -61,17 +71,18 @@ impl Env {
     /// `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`,
     /// `XDG_RUNTIME_DIR`; as ausentes ficam de fora e os valores vão como estão.
     pub fn vars(&self) -> Vec<(&'static str, PathBuf)> {
-        [
-            ("HOME", &self.home),
-            ("XDG_DATA_HOME", &self.xdg_data_home),
-            ("XDG_CONFIG_HOME", &self.xdg_config_home),
-            ("XDG_CACHE_HOME", &self.xdg_cache_home),
-            ("XDG_STATE_HOME", &self.xdg_state_home),
-            ("XDG_RUNTIME_DIR", &self.xdg_runtime_dir),
-        ]
-        .into_iter()
-        .filter_map(|(name, v)| v.clone().map(|v| (name, v)))
-        .collect()
+        Self::NAMES
+            .into_iter()
+            .zip([
+                &self.home,
+                &self.xdg_data_home,
+                &self.xdg_config_home,
+                &self.xdg_cache_home,
+                &self.xdg_state_home,
+                &self.xdg_runtime_dir,
+            ])
+            .filter_map(|(name, v)| v.clone().map(|v| (name, v)))
+            .collect()
     }
 
     /// Variável XDG só vale se for caminho absoluto.

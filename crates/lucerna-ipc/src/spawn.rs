@@ -41,8 +41,8 @@ pub const SPAWN_WAIT: Duration = Duration::from_secs(2);
 /// Tamanho a partir do qual o log do serviço recomeça do zero ao subir (1 MiB).
 pub const LOG_MAX: u64 = 1_048_576;
 
-/// Como subir o serviço de um app: `<program> serve`, com a saída em `log` e
-/// as variáveis `envs` a mais no ambiente.
+/// Como subir o serviço de um app: `<program> serve`, com a saída em `log`,
+/// as variáveis `envs` a mais no ambiente e as `env_removes` tiradas dele.
 ///
 /// Quem monta é o chamador (a CLI, o shell): o `lucerna-ipc` não sabe as
 /// regras de pasta do `lucerna-paths`.
@@ -54,6 +54,8 @@ pub struct ServeCommand {
     pub log: PathBuf,
     /// Variáveis de ambiente a mais para o serviço, além das herdadas.
     pub envs: Vec<(OsString, OsString)>,
+    /// Variáveis herdadas que o serviço não deve ver.
+    pub env_removes: Vec<OsString>,
 }
 
 impl ServeCommand {
@@ -63,12 +65,20 @@ impl ServeCommand {
             program: program.into(),
             log: log.into(),
             envs: Vec::new(),
+            env_removes: Vec::new(),
         }
     }
 
     /// Acrescenta a variável `key=value` ao ambiente do serviço.
     pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
         self.envs.push((key.into(), value.into()));
+        self
+    }
+
+    /// Tira a variável `key` do ambiente herdado pelo serviço (uma definida
+    /// com [`ServeCommand::env`] continua valendo).
+    pub fn env_remove(mut self, key: impl Into<OsString>) -> Self {
+        self.env_removes.push(key.into());
         self
     }
 
@@ -88,7 +98,11 @@ impl ServeCommand {
         } else {
             self.program.clone()
         };
-        let mut child = Command::new(program)
+        let mut cmd = Command::new(program);
+        for key in &self.env_removes {
+            cmd.env_remove(key);
+        }
+        let mut child = cmd
             .arg("serve")
             .current_dir("/")
             .stdin(Stdio::null())

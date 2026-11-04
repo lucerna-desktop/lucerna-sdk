@@ -283,3 +283,18 @@ fn service_runs_in_the_root_folder() {
     ServeCommand::new(&prog, &log).spawn().unwrap();
     wait_content(&log, "/\n");
 }
+
+#[test]
+fn env_remove_hides_an_inherited_variable() {
+    // O processo do teste tem `HOME`; o serviço não a vê.
+    let t = tempfile::tempdir().unwrap();
+    let prog = script(t.path(), "demo", "echo \"${HOME-sem} $LUCERNA_X\"\n");
+    let log = t.path().join("serve.log");
+    ServeCommand::new(&prog, &log)
+        .env_remove("HOME")
+        .env_remove("LUCERNA_X")
+        .env("LUCERNA_X", "1")
+        .spawn()
+        .unwrap();
+    wait_content(&log, "sem 1\n");
+}

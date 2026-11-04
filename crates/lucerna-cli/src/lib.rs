@@ -344,10 +344,14 @@ impl CliApp {
                 Ok(l) => l,
                 Err(e) => return self.no_service(err, &e.to_string(), run.json),
             };
-            let serve = env
-                .vars()
+            // O serviço vê exatamente o `env`: as variáveis que ele não
+            // define não vêm do processo da linha de comando.
+            let vars = env.vars();
+            let serve = Env::NAMES
                 .into_iter()
-                .fold(ServeCommand::new(program, log), |c, (k, v)| c.env(k, v));
+                .filter(|name| !vars.iter().any(|(k, _)| k == name))
+                .fold(ServeCommand::new(program, log), ServeCommand::env_remove);
+            let serve = vars.into_iter().fold(serve, |c, (k, v)| c.env(k, v));
             match tokio::time::timeout(
                 CONNECT_TIMEOUT,
                 Client::connect_or_spawn(&path, "cli", &self.app, &serve),
