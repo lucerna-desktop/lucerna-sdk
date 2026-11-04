@@ -15,12 +15,36 @@ use lucerna_ipc::{Client, ClientError, LOG_MAX, SPAWN_WAIT, ServeCommand};
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
 
-/// Escreve `body` num script `/bin/sh` em `dir/name`, com modo `0755`.
+/// Escreve `body` num script `/bin/sh` em `dir/name`, com modo `0755`, e
+/// espera ele poder rodar (veja [`wait_executable`]). Com o argumento
+/// `__probe`, o script sai sem rodar `body`.
 fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\n[ \"$1\" = __probe ] && exit 0\n{body}"),
+    )
+    .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    wait_executable(&path);
     path
+}
+
+/// Com os testes em paralelo, um `fork` de outra thread pode herdar por um
+/// instante o fd de escrita do script (nem um `rename` resolve: o fd herdado
+/// é do mesmo arquivo), e o `exec` dá `ETXTBSY`. Roda o script com
+/// `__probe` (ele sai na hora) até o `exec` passar.
+fn wait_executable(bin: &Path) {
+    for _ in 0..200 {
+        match std::process::Command::new(bin).arg("__probe").status() {
+            Ok(_) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => panic!("o script {} não roda: {e}", bin.display()),
+        }
+    }
+    panic!("o script {} continua ocupado", bin.display());
 }
 
 /// Tarefa que espera a marca (com conteúdo: o script terminou de escrevê-la),

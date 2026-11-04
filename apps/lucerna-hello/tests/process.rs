@@ -35,7 +35,8 @@ fn hello(dir: &Path) -> Command {
 }
 
 /// Um `systemctl` falso em `dir/bin/systemctl`: grava os argumentos (`"$@"`)
-/// numa linha de `dir/systemctl.log` e roda `body`.
+/// numa linha de `dir/systemctl.log` e roda `body`. Com o argumento
+/// `__probe`, sai sem gravar nada (veja [`wait_executable`]).
 fn fake_systemctl_in(dir: &Path, body: &str) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -43,11 +44,32 @@ fn fake_systemctl_in(dir: &Path, body: &str) -> PathBuf {
     let log = dir.join("systemctl.log");
     std::fs::write(
         &path,
-        format!("#!/bin/sh\necho \"$@\" >> '{}'\n{body}\n", log.display()),
+        format!(
+            "#!/bin/sh\n[ \"$1\" = __probe ] && exit 0\necho \"$@\" >> '{}'\n{body}\n",
+            log.display()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    wait_executable(&path);
     path
+}
+
+/// Com os testes em paralelo, um `fork` de outra thread pode herdar por um
+/// instante o fd de escrita do script (nem um `rename` resolve: o fd herdado
+/// é do mesmo arquivo), e o `exec` dá `ETXTBSY`. Roda o script com
+/// `__probe` (ele sai na hora) até o `exec` passar.
+fn wait_executable(bin: &Path) {
+    for _ in 0..200 {
+        match std::process::Command::new(bin).arg("__probe").status() {
+            Ok(_) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => panic!("o script {} não roda: {e}", bin.display()),
+        }
+    }
+    panic!("o script {} continua ocupado", bin.display());
 }
 
 /// O pid de quem atende em `sock` (`SO_PEERCRED`).
