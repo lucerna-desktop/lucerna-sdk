@@ -249,3 +249,13 @@ fn stdin_is_dev_null() {
     ServeCommand::new(&prog, &log).spawn().unwrap();
     wait_content(&log, "fim\n");
 }
+
+#[test]
+fn service_runs_in_the_root_folder() {
+    // A pasta de trabalho do serviço é `/`, não a de quem o subiu.
+    let t = tempfile::tempdir().unwrap();
+    let prog = script(t.path(), "demo", "pwd\n");
+    let log = t.path().join("serve.log");
+    ServeCommand::new(&prog, &log).spawn().unwrap();
+    wait_content(&log, "/\n");
+}

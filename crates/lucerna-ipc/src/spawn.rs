@@ -20,6 +20,9 @@
 //! os do terminal, o serviço não segura o pipe de quem chamou
 //! (`lucerna-hello add 1 | cat` termina na hora).
 //!
+//! O serviço roda na pasta `/`: um serviço de vida longa não prende a pasta
+//! de quem o subiu (um pendrive montado, por exemplo).
+//!
 //! O log recomeça do zero quando passa de [`LOG_MAX`] na hora de subir. Uma
 //! thread por subida faz `wait()` no filho: num cliente de vida longa (a TUI,
 //! o shell), o processo que saiu é recolhido e não vira zumbi.
@@ -73,12 +76,21 @@ impl ServeCommand {
     ///
     /// Cria a pasta do log, abre o log em modo de acréscimo (truncando se ele
     /// passa de [`LOG_MAX`]) e liga nele o stdout e o stderr; o stdin é
-    /// `/dev/null` e o processo fica num grupo próprio. Uma thread recolhe o
+    /// `/dev/null`, a pasta de trabalho é `/` e o processo fica num grupo
+    /// próprio. Uma thread recolhe o
     /// filho quando ele sai.
     pub fn spawn(&self) -> io::Result<()> {
         let log = open_log(&self.log)?;
-        let mut child = Command::new(&self.program)
+        // Um caminho relativo com pasta (`./bin/app`) valia na pasta de quem
+        // chamou; um nome sem pasta continua sendo procurado no `PATH`.
+        let program = if self.program.is_relative() && self.program.components().count() > 1 {
+            std::path::absolute(&self.program)?
+        } else {
+            self.program.clone()
+        };
+        let mut child = Command::new(program)
             .arg("serve")
+            .current_dir("/")
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log)
