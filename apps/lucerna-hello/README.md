@@ -4,13 +4,24 @@ O app de exemplo do Lucerna: um contador. É o molde que os apps copiam.
 
 ## Como é feito
 
-- **lib + bin.** `src/lib.rs` monta tudo e é o que os testes usam: `hello()`
+- **lib + bin.** `src/lib.rs` monta tudo e é o que os testes usam: `hello(env: &Env)`
   devolve o `ServiceBuilder` com os tópicos e os métodos, e `cli()` devolve a
   linha de comando (`lucerna_cli::CliApp`). `src/main.rs` só escolhe entre
-  `lucerna-hello serve` (o serviço) e os subcomandos.
+  `lucerna-hello serve` (o serviço) e os subcomandos. O `serve` que perde a
+  corrida para outro serviço (`ServiceError::AlreadyRunning`) sai com `0`, em
+  silêncio.
 - **Tópicos.** `counter` (`{"value": n}`) e o contínuo `ticks`
   (`{"tick": k, "bands": [64 × f32]}` a cada 1 ms, produzido só com assinante).
-- **Métodos.** `counter.add {"n"}`, `counter.reset` e `quiet.set {"on"}`.
+- **Métodos.** `counter.add {"n"}`, `counter.reset`, `quiet.set {"on"}`,
+  `reminder.set {"in", "persistent"?}` e `reminder.cancel`.
+- **Lembrete.** O tópico `reminder` (`{"at", "persistent", "last_fired"}`)
+  mostra o próximo horário; o estado fica em `reminder.json`, na pasta de
+  dados. O horário é marcado no timer `reminder` (a unidade
+  `lucerna-hello_reminder.timer`, com o systemd) ou, sem ele, no agendador
+  local, que mantém o serviço de pé até lá. No horário, o serviço avisa pelas
+  notificações do sistema e tira o lembrete; um lembrete vencido com o serviço
+  parado é cumprido quando ele sobe de novo. O `--persistent` mantém também a
+  entrada de autostart até o aviso.
 - **Shell.** Com o contador diferente de zero, o item `counter` fica na barra
   com o valor; `quiet.set` pede ou devolve o não perturbe. Os dois seguram o
   serviço (ele não sai por ociosidade enquanto existirem). Sem shell, nada dá
@@ -18,7 +29,12 @@ O app de exemplo do Lucerna: um contador. É o molde que os apps copiam.
 - **Testes.** `tests/protocol.rs` fala o protocolo com o serviço em processo,
   num socket temporário; `tests/shell.rs` usa o `FakeShell` do
   `lucerna-service` (feature `testing`, ligada em `[dev-dependencies]`);
-  `tests/files.rs` confere o manifesto e as unidades.
+  `tests/reminder.rs` cobre o lembrete (aviso no horário, persistente, vencido
+  ao subir, pedidos inválidos, `remind` e `forget`); `tests/files.rs` confere o
+  manifesto e as unidades; `tests/process.rs` roda o binário de verdade, sem
+  systemd (o `PATH` não tem `systemctl`, ou tem um falso): a CLI sobe o
+  serviço, dois clientes juntos acabam num serviço só, o próximo cliente o
+  sobe de novo depois de uma queda e o lembrete acontece pelo agendador local.
 
 ## Linha de comando
 
@@ -26,6 +42,8 @@ O app de exemplo do Lucerna: um contador. É o molde que os apps copiam.
 lucerna-hello add 3        # Contador: 3
 lucerna-hello reset        # Contador: 0
 lucerna-hello quiet on     # liga o não perturbe
+lucerna-hello remind 30    # lembrete para daqui a 30 s (--persistent sobrevive a reiniciar)
+lucerna-hello forget       # tira o lembrete
 lucerna-hello status       # estado dos tópicos
 lucerna-hello watch counter
 ```
@@ -50,6 +68,20 @@ tire o `sudo`; o `ExecStart=` da unidade aponta para `/usr/bin`.
 O systemd escuta em `$XDG_RUNTIME_DIR/lucerna/hello.sock` (pasta `0700`,
 socket `0600`) e sobe o serviço na primeira conexão; o serviço sai sozinho
 depois de 60 s sem clientes, sem itens na barra e sem não perturbe pedido.
+
+## Sem instalar nada
+
+Sem o systemd e sem instalar unidades, `lucerna-hello add 3` já sobe o
+serviço sozinho (o log fica em `$XDG_STATE_HOME/lucerna/hello/serve.log`), e o
+próximo comando o sobe de novo se ele cair. Para subir no login sem systemd,
+a entrada `$XDG_CONFIG_HOME/autostart/lucerna-hello.desktop` cobre o KDE, o
+GNOME e o XFCE; no Hyprland sem systemd, ponha na configuração:
+
+```
+exec-once = lucerna-hello serve
+```
+
+`LUCERNA_NO_SPAWN=1` desliga a subida pela linha de comando.
 
 Para desenvolver sem instalar, `cargo run -p lucerna-hello -- serve` cria o
 socket à mão no mesmo lugar (`LUCERNA_IDLE_TIMEOUT_MS` encurta a ociosidade).

@@ -633,6 +633,7 @@ fn systemd_is_used_when_the_unit_loads() {
 - **Host de painéis do `lucerna-shell`** (item 7 do PR #13): com a conexão ao `<app>.sock` recusada, o host roda `<app.tui do manifesto> serve` pelo mesmo molde (grupo de processos novo, saída no `serve.log`, até 2 s com espera crescente) e reconecta. É do repositório `lucerna-shell`, junto com o cliente QML do protocolo.
 - O `lucernad` adota o `connect_or_spawn`/agendador quando migrar para o SDK (spec próprio dele).
 - A TUI, quando existir, usa `Client::connect_or_spawn` e mostra a causa do `NotStarted` em vez de sair.
+- **Problema conhecido, a corrigir em outro plano:** com o systemd escolhido, um timer que dispara com o serviço já rodando não avisa o app (o `on_timer` só é chamado pelo agendador local, e o `on_start` só roda na subida), então o trabalho vencido espera até a próxima subida.
 
 ## Autorrevisão
 
