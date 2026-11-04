@@ -11,10 +11,10 @@ Base comum dos apps do ecossistema Lucerna em Rust: o protocolo de conversa entr
 | Crate | O que traz |
 | --- | --- |
 | [`lucerna-protocol`](https://crates.io/crates/lucerna-protocol) | Os tipos das mensagens (JSON-RPC 2.0, `hello`, `state`, erros), a versão do protocolo e os nomes reservados, sem I/O. |
-| [`lucerna-ipc`](https://crates.io/crates/lucerna-ipc) | O cliente e o servidor do socket Unix: enquadramento por linha, aperto de mão, tópicos com retrato e `seq`, limite de tamanho. |
-| [`lucerna-service`](https://crates.io/crates/lucerna-service) | O esqueleto do serviço: socket do systemd, saída por ociosidade, trabalho pendente, timers agendados e a conexão ao `shell.sock`. |
+| [`lucerna-ipc`](https://crates.io/crates/lucerna-ipc) | O cliente e o servidor do socket Unix: enquadramento por linha, aperto de mão, tópicos com retrato e `seq`, limite de tamanho e a subida do serviço pelo cliente (`connect_or_spawn`). |
+| [`lucerna-service`](https://crates.io/crates/lucerna-service) | O esqueleto do serviço: socket do systemd, saída por ociosidade, trabalho pendente, timers agendados (do systemd ou o agendador local) e a conexão ao `shell.sock`. |
 | [`lucerna-cli`](https://crates.io/crates/lucerna-cli) | O esqueleto da linha de comando: subcomandos como métodos, `status`, `watch`, `--json` e códigos de saída. |
-| [`lucerna-paths`](https://crates.io/crates/lucerna-paths) | As pastas XDG e o socket de cada app. |
+| [`lucerna-paths`](https://crates.io/crates/lucerna-paths) | As pastas XDG (incluindo a pasta de estado) e o socket de cada app. |
 | [`lucerna-manifest`](https://crates.io/crates/lucerna-manifest) | O manifesto JSON dos apps: leitura, validação e compatibilidade da `api` do painel. |
 
 Um app depende só do `lucerna-service` e do `lucerna-cli`, que reexportam o que ele usa dos outros.
@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 
 use lucerna_cli::clap::{Arg, Command, value_parser};
 use lucerna_cli::{Call, CliApp, CliCommand, Invocation, usage_exit};
-use lucerna_service::{RpcError, ServiceBuilder};
+use lucerna_service::{RpcError, ServiceBuilder, ServiceError};
 use serde_json::json;
 
 const APP: &str = "contador";
@@ -62,6 +62,7 @@ async fn serve() -> i32 {
     });
     match service.run().await {
         Ok(()) => 0, // ociosidade ou SIGTERM
+        Err(ServiceError::AlreadyRunning(_)) => 0, // outro serviço já atende
         Err(e) => {
             eprintln!("erro: {e}");
             1
@@ -98,6 +99,15 @@ async fn main() -> ExitCode {
 
 Com o serviço rodando, `lucerna-contador add 3` imprime `value: 3`, e `lucerna-contador watch counter` acompanha o tópico. O [`lucerna-hello`](https://github.com/lucerna-desktop/lucerna-sdk/blob/main/apps/lucerna-hello) mostra o resto: um tópico contínuo, itens na barra do shell, não perturbe, as unidades do systemd, o manifesto e os testes.
 
+## Sem systemd
+
+O app funciona sem o systemd (e sem o shell):
+
+- Quando ninguém atende o socket, a linha de comando sobe `lucerna-<app> serve` sozinha, solto da CLI, com o log em `$XDG_STATE_HOME/lucerna/<app>/serve.log`. Só depois de 2 s sem conseguir ela sai com o código `2`, dizendo o porquê.
+- Se o serviço cair, o próximo cliente o sobe de novo.
+- O trabalho agendado vai pelo agendador local, que mantém o serviço de pé até o horário (com o systemd, continua nos timers do systemd do usuário).
+- Só enquanto houver um timer persistente marcado, o serviço mantém a entrada `$XDG_CONFIG_HOME/autostart/lucerna-<app>.desktop`, que o sobe no login do KDE, do GNOME e do XFCE para cumprir o que venceu com a sessão fechada; sem timer persistente, a entrada some e nada sobe no login. No Hyprland sem systemd, que não lê essa pasta, `exec-once = lucerna-<app> serve` na configuração faz esse papel (sem nada a fazer, o serviço sai por ociosidade).
+
 ## Ligação com o Lucerna
 
 Faz parte do ecossistema do [Lucerna](https://github.com/lucerna-desktop/lucerna-shell), o shell de desktop para o Hyprland. O shell cuida só da interface; a lógica fica em Rust, neste e nos outros repositórios do ecossistema.
@@ -120,6 +130,8 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+Os testes não tocam o systemd real: o `PATH` dos testes de processo não tem `systemctl`. `LUCERNA_NO_SPAWN=1` desliga a subida do serviço pela linha de comando.
 
 Os testes de processo criam sockets Unix, então o `TMPDIR` precisa ser curto (o CI fixa `TMPDIR=/tmp`). O teste que usa o `systemctl --user` de verdade é `#[ignore]` e só roda numa sessão com systemd de usuário:
 

@@ -1,4 +1,10 @@
 //! Como o serviço recebe o socket: do systemd (`LISTEN_FDS`) ou criado à mão.
+//!
+//! O socket criado à mão serve ao desenvolvimento e também é o caminho do
+//! serviço subido pelo cliente (sem systemd, ou com a unidade não instalada).
+//! Dois `serve` subindo juntos (dois clientes que não acharam ninguém) não se
+//! atrapalham: o lock `<app>.lock` deixa um só criar o socket, e o outro
+//! recebe [`ServiceError::AlreadyRunning`].
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;

@@ -2,7 +2,7 @@
 
 **Data:** 2026-10-19
 **Base:** `docs/ecossistema.md` (as decisões de lá continuam valendo; este documento fecha o "formato exato do protocolo e do manifesto" e o "versionamento" que estavam em aberto).
-**Atualização (2026-10-27):** o serviço sem systemd (subida pelo cliente, retomada pelo próximo cliente e trabalho agendado sem os timers do systemd), pelo princípio "Cada app funciona sozinho" do `ecossistema.md`. O código ainda não faz isso; ver "Serviço sem systemd".
+**Atualização (2026-10-27):** o serviço sem systemd (subida pelo cliente, retomada pelo próximo cliente e trabalho agendado sem os timers do systemd), pelo princípio "Cada app funciona sozinho" do `ecossistema.md`. Implementado conforme `docs/superpowers/plans/2026-11-01-servico-sem-systemd.md`; ver "Serviço sem systemd".
 
 ## Por quê
 

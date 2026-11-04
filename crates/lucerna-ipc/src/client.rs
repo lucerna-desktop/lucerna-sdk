@@ -11,10 +11,10 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lucerna_protocol::methods::{HELLO, STATE, SUBSCRIBE, UNSUBSCRIBE};
 use lucerna_protocol::{
@@ -29,6 +29,7 @@ use tokio::sync::{Notify, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::framing::{FrameError, LineReader, MAX_MESSAGE};
+use crate::spawn::{SPAWN_WAIT, ServeCommand};
 use crate::sync::lock;
 
 /// Quanto uma escrita que falhou com o socket quebrado espera pelo erro que o
@@ -62,6 +63,41 @@ pub enum ClientError {
     /// não é "sem serviço".
     #[error("Resposta inválida do serviço: {0}.")]
     Decode(serde_json::Error),
+    /// [`Client::connect_or_spawn`] subiu o serviço, mas ele não atendeu no
+    /// socket em [`SPAWN_WAIT`]. O porquê costuma estar no `log`.
+    #[error(
+        "O serviço não subiu em {} s; veja o log em {}.",
+        SPAWN_WAIT.as_secs_f64(),
+        log.display()
+    )]
+    NotStarted {
+        /// O log do serviço subido.
+        log: PathBuf,
+    },
+    /// [`Client::connect_or_spawn`] não conseguiu rodar `program serve`.
+    #[error("Não foi possível rodar {} serve: {source}.", program.display())]
+    Spawn {
+        /// O programa que não rodou.
+        program: PathBuf,
+        /// O erro do sistema.
+        source: io::Error,
+    },
+}
+
+/// Espera antes da tentativa `n` (a partir de `0`): `10 ms × 2^n`, no máximo `200 ms`.
+fn backoff(n: u32) -> Duration {
+    Duration::from_millis(10u64.saturating_mul(1u64 << n.min(16)).min(200))
+}
+
+/// O `connect` falhou porque ninguém ouve no socket (arquivo ausente ou socket velho)?
+fn nobody_listening(e: &ClientError) -> bool {
+    matches!(
+        e,
+        ClientError::Connect(io) if matches!(
+            io.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+        )
+    )
 }
 
 /// Quem espera uma resposta.
@@ -175,6 +211,47 @@ impl Client {
         tokio::time::timeout(dur, Client::connect(path, client, app))
             .await
             .map_err(|_| ClientError::Timeout)?
+    }
+
+    /// Como [`Client::connect`], mas sobe o serviço com `serve` quando ninguém
+    /// atende no socket (o arquivo não existe ou é um socket velho).
+    ///
+    /// Depois de subir, tenta de novo com espera crescente (`10 ms × 2^n`, no
+    /// máximo `200 ms`) até [`SPAWN_WAIT`]; passou o prazo:
+    /// [`ClientError::NotStarted`] com o log. Não rodou o programa:
+    /// [`ClientError::Spawn`]. Os outros erros (permissão, um aperto de mão
+    /// recusado) voltam como estão, sem subir nada. Não há prazo para o aperto
+    /// de mão: quem chama põe o seu, como a CLI faz.
+    pub async fn connect_or_spawn(
+        path: &Path,
+        client: &str,
+        app: &str,
+        serve: &ServeCommand,
+    ) -> Result<Client, ClientError> {
+        match Client::connect(path, client, app).await {
+            Err(e) if nobody_listening(&e) => {}
+            other => return other,
+        }
+        serve.spawn().map_err(|source| ClientError::Spawn {
+            program: serve.program.clone(),
+            source,
+        })?;
+        let start = Instant::now();
+        let mut n = 0;
+        loop {
+            let left = SPAWN_WAIT.saturating_sub(start.elapsed());
+            if left.is_zero() {
+                return Err(ClientError::NotStarted {
+                    log: serve.log.clone(),
+                });
+            }
+            tokio::time::sleep(backoff(n).min(left)).await;
+            n += 1;
+            match Client::connect(path, client, app).await {
+                Err(e) if nobody_listening(&e) => {}
+                other => return other,
+            }
+        }
     }
 
     /// Resposta do aperto de mão.

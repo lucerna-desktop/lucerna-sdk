@@ -16,7 +16,7 @@ async fn handshake() {
     let res = &v["result"];
     assert_eq!(res["app"], "hello");
     assert_eq!(res["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(res["topics"], json!(["counter"]));
+    assert_eq!(res["topics"], json!(["counter", "reminder"]));
     assert_eq!(res["streams"], json!(["ticks"]));
     let methods: Vec<&str> = res["methods"]
         .as_array()
@@ -24,7 +24,13 @@ async fn handshake() {
         .iter()
         .map(|m| m.as_str().unwrap())
         .collect();
-    for m in ["counter.add", "counter.reset", "quiet.set"] {
+    for m in [
+        "counter.add",
+        "counter.reset",
+        "quiet.set",
+        "reminder.set",
+        "reminder.cancel",
+    ] {
         assert!(methods.contains(&m), "falta {m} em {methods:?}");
     }
 }

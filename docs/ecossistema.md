@@ -83,7 +83,7 @@ O serviço é a única parte que mexe nos dados do app. Isso vale para o painel 
 
 O serviço sai depois de 60 s sem clientes e sem trabalho pendente (um item na barra ou o não perturbe pedido contam como trabalho); o valor é ajustável por app.
 
-**Trabalho agendado sem o serviço rodando:** um lembrete da rotina, por exemplo, precisa acontecer com o serviço parado. Então o serviço registra um timer do systemd do usuário para o próximo horário (`lucerna-<app>_<nome>.timer`, persistente ou não). O timer sobe o serviço, que avisa pelas notificações do shell, cancela o timer e volta a sair. Os detalhes estão no spec do protocolo.
+**Trabalho agendado sem o serviço rodando:** um lembrete da rotina, por exemplo, precisa acontecer com o serviço parado. Então o serviço marca o próximo horário pelo timer do systemd do usuário (`lucerna-<app>_<nome>.timer`, persistente ou não) ou, sem ele, pelo agendador local, que mantém o serviço de pé até o horário. No horário, o serviço avisa pelas notificações do sistema, cancela o timer e volta a sair. Os detalhes estão no spec do protocolo.
 
 ## Painel e TUI
 
@@ -124,7 +124,6 @@ O protocolo, o manifesto, o versionamento, a ociosidade, os timers e o esqueleto
 
 - O empacotamento, incluindo o AUR.
 - A forma do `lucernad`: um daemon com módulos ou vários binários.
-- Como o cliente sobe o serviço sem systemd (no `lucerna-ipc`) e como o trabalho agendado acontece sem os timers do systemd.
 
 ## Futuro
 

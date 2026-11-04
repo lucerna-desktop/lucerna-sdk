@@ -4,6 +4,10 @@
 //! Regras puras: nada aqui lê o ambiente sozinho além de [`Env::from_process`];
 //! os testes passam um [`Env`] explícito.
 //!
+//! Além das pastas XDG de dados, configuração e cache, há a pasta de estado
+//! (`$XDG_STATE_HOME/lucerna/<app>`), onde fica o log do serviço subido pelo
+//! cliente, e a entrada de início automático em `$XDG_CONFIG_HOME/autostart`.
+//!
 //! **Protocolo:** não fala o protocolo; as pastas e o socket
 //! (`$XDG_RUNTIME_DIR/lucerna/<app>.sock`) são os do protocolo 1.0.
 
@@ -27,11 +31,23 @@ pub struct Env {
     pub xdg_config_home: Option<PathBuf>,
     /// `XDG_CACHE_HOME`.
     pub xdg_cache_home: Option<PathBuf>,
+    /// `XDG_STATE_HOME`.
+    pub xdg_state_home: Option<PathBuf>,
     /// `XDG_RUNTIME_DIR`.
     pub xdg_runtime_dir: Option<PathBuf>,
 }
 
 impl Env {
+    /// Os nomes das variáveis que um `Env` guarda, na ordem de [`Env::vars`].
+    pub const NAMES: [&'static str; 6] = [
+        "HOME",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+    ];
+
     /// Lê as variáveis do processo; variáveis vazias contam como ausentes.
     pub fn from_process() -> Env {
         Env::from_lookup(|name| std::env::var_os(name))
@@ -46,8 +62,27 @@ impl Env {
             xdg_data_home: var("XDG_DATA_HOME"),
             xdg_config_home: var("XDG_CONFIG_HOME"),
             xdg_cache_home: var("XDG_CACHE_HOME"),
+            xdg_state_home: var("XDG_STATE_HOME"),
             xdg_runtime_dir: var("XDG_RUNTIME_DIR"),
         }
+    }
+
+    /// Os pares `(nome, valor)` das variáveis definidas, na ordem `HOME`,
+    /// `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`,
+    /// `XDG_RUNTIME_DIR`; as ausentes ficam de fora e os valores vão como estão.
+    pub fn vars(&self) -> Vec<(&'static str, PathBuf)> {
+        Self::NAMES
+            .into_iter()
+            .zip([
+                &self.home,
+                &self.xdg_data_home,
+                &self.xdg_config_home,
+                &self.xdg_cache_home,
+                &self.xdg_state_home,
+                &self.xdg_runtime_dir,
+            ])
+            .filter_map(|(name, v)| v.clone().map(|v| (name, v)))
+            .collect()
     }
 
     /// Variável XDG só vale se for caminho absoluto.
@@ -74,6 +109,11 @@ impl Env {
 
     fn cache_home(&self) -> Result<PathBuf, PathsError> {
         self.base(&self.xdg_cache_home, ".cache")
+    }
+
+    /// `$XDG_STATE_HOME` (se absoluto) ou `$HOME/.local/state`.
+    pub fn state_home(&self) -> Result<PathBuf, PathsError> {
+        self.base(&self.xdg_state_home, ".local/state")
     }
 
     /// `$XDG_RUNTIME_DIR`, se absoluto; senão [`PathsError::NoRuntimeDir`]
@@ -186,6 +226,26 @@ impl AppPaths {
     /// `$XDG_CACHE_HOME/lucerna/<app>`.
     pub fn cache_dir(&self) -> Result<PathBuf, PathsError> {
         Ok(self.env.cache_home()?.join("lucerna").join(&self.app))
+    }
+
+    /// `$XDG_STATE_HOME/lucerna/<app>`.
+    pub fn state_dir(&self) -> Result<PathBuf, PathsError> {
+        Ok(self.env.state_home()?.join("lucerna").join(&self.app))
+    }
+
+    /// `$XDG_STATE_HOME/lucerna/<app>/serve.log`: o log do serviço subido
+    /// pelo cliente.
+    pub fn serve_log(&self) -> Result<PathBuf, PathsError> {
+        Ok(self.state_dir()?.join("serve.log"))
+    }
+
+    /// `$XDG_CONFIG_HOME/autostart/lucerna-<app>.desktop`.
+    pub fn autostart_file(&self) -> Result<PathBuf, PathsError> {
+        Ok(self
+            .env
+            .config_home()?
+            .join("autostart")
+            .join(format!("lucerna-{}.desktop", self.app)))
     }
 
     /// `$XDG_RUNTIME_DIR/lucerna`.
