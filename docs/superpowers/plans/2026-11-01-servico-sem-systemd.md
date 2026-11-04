@@ -634,6 +634,7 @@ fn systemd_is_used_when_the_unit_loads() {
 - O `lucernad` adota o `connect_or_spawn`/agendador quando migrar para o SDK (spec próprio dele).
 - A TUI, quando existir, usa `Client::connect_or_spawn` e mostra a causa do `NotStarted` em vez de sair.
 - **Problema conhecido, a corrigir em outro plano:** com o systemd escolhido, um timer que dispara com o serviço já rodando não avisa o app (o `on_timer` só é chamado pelo agendador local, e o `on_start` só roda na subida), então o trabalho vencido espera até a próxima subida.
+- **Corrida conhecida na saída por ociosidade, a corrigir em outro plano:** um cliente que chega bem quando o serviço anterior sai por ociosidade (o socket já fechado, o lock ainda preso) sobe um `serve` que é recusado com `AlreadyRunning`, e pode desistir com o código `2` e o log vazio; uma conexão aceita da fila e logo fechada volta `Closed`, sem subida nenhuma. Correção possível: subir de novo quando o primeiro filho já saiu, ou tratar o `Closed` no aperto de mão como "ninguém ouvindo".
 
 ## Autorrevisão
 

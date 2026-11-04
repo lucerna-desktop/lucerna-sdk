@@ -15,13 +15,17 @@ O app de exemplo do Lucerna: um contador. É o molde que os apps copiam.
 - **Métodos.** `counter.add {"n"}`, `counter.reset`, `quiet.set {"on"}`,
   `reminder.set {"in", "persistent"?}` e `reminder.cancel`.
 - **Lembrete.** O tópico `reminder` (`{"at", "persistent", "last_fired"}`)
-  mostra o próximo horário; o estado fica em `reminder.json`, na pasta de
-  dados. O horário é marcado no timer `reminder` (a unidade
-  `lucerna-hello_reminder.timer`, com o systemd) ou, sem ele, no agendador
-  local, que mantém o serviço de pé até lá. No horário, o serviço avisa pelas
-  notificações do sistema e tira o lembrete; um lembrete vencido com o serviço
-  parado é cumprido quando ele sobe de novo. O `--persistent` mantém também a
-  entrada de autostart até o aviso.
+  mostra o próximo horário; o estado fica em `reminder.json`: o persistente
+  na pasta de dados (sobrevive a reiniciar), o outro em
+  `$XDG_RUNTIME_DIR/lucerna/hello` (some no logout e ao reiniciar, como o
+  timer não persistente do systemd). Há um lembrete por vez. O horário é
+  marcado no timer `reminder` (a unidade `lucerna-hello_reminder.timer`, com
+  o systemd) ou, sem ele, no agendador local, que mantém o serviço de pé até
+  lá. No horário, o serviço tira o lembrete e publica o disparo no tópico
+  `reminder` (`last_fired`); um app de verdade avisaria também pelas
+  notificações do sistema. Um lembrete vencido com o serviço parado é
+  cumprido quando ele sobe de novo. O `--persistent` mantém também a entrada
+  de autostart até o disparo.
 - **Shell.** Com o contador diferente de zero, o item `counter` fica na barra
   com o valor; `quiet.set` pede ou devolve o não perturbe. Os dois seguram o
   serviço (ele não sai por ociosidade enquanto existirem). Sem shell, nada dá
@@ -29,8 +33,8 @@ O app de exemplo do Lucerna: um contador. É o molde que os apps copiam.
 - **Testes.** `tests/protocol.rs` fala o protocolo com o serviço em processo,
   num socket temporário; `tests/shell.rs` usa o `FakeShell` do
   `lucerna-service` (feature `testing`, ligada em `[dev-dependencies]`);
-  `tests/reminder.rs` cobre o lembrete (aviso no horário, persistente, vencido
-  ao subir, pedidos inválidos, `remind` e `forget`); `tests/files.rs` confere o
+  `tests/reminder.rs` cobre o lembrete (disparo no horário, persistente, onde
+  fica o arquivo, vencido ao subir, pedidos inválidos, `remind` e `forget`); `tests/files.rs` confere o
   manifesto e as unidades; `tests/process.rs` roda o binário de verdade, sem
   systemd (o `PATH` não tem `systemctl`, ou tem um falso): a CLI sobe o
   serviço, dois clientes juntos acabam num serviço só, o próximo cliente o
@@ -73,9 +77,13 @@ depois de 60 s sem clientes, sem itens na barra e sem não perturbe pedido.
 
 Sem o systemd e sem instalar unidades, `lucerna-hello add 3` já sobe o
 serviço sozinho (o log fica em `$XDG_STATE_HOME/lucerna/hello/serve.log`), e o
-próximo comando o sobe de novo se ele cair. Para subir no login sem systemd,
-a entrada `$XDG_CONFIG_HOME/autostart/lucerna-hello.desktop` cobre o KDE, o
-GNOME e o XFCE; no Hyprland sem systemd, ponha na configuração:
+próximo comando o sobe de novo se ele cair. Nada sobe no login, a não ser
+com um lembrete `--persistent` marcado: enquanto ele existe, a entrada
+`$XDG_CONFIG_HOME/autostart/lucerna-hello.desktop` sobe o serviço no login do
+KDE, do GNOME e do XFCE para cumprir o lembrete vencido, e some depois do
+disparo. No Hyprland sem systemd, que não lê essa pasta, o mesmo papel fica
+com uma linha na configuração (sem nada a fazer, o serviço sai por
+ociosidade):
 
 ```
 exec-once = lucerna-hello serve

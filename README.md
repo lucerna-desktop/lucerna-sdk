@@ -106,7 +106,7 @@ O app funciona sem o systemd (e sem o shell):
 - Quando ninguém atende o socket, a linha de comando sobe `lucerna-<app> serve` sozinha, solto da CLI, com o log em `$XDG_STATE_HOME/lucerna/<app>/serve.log`. Só depois de 2 s sem conseguir ela sai com o código `2`, dizendo o porquê.
 - Se o serviço cair, o próximo cliente o sobe de novo.
 - O trabalho agendado vai pelo agendador local, que mantém o serviço de pé até o horário (com o systemd, continua nos timers do systemd do usuário).
-- A entrada `$XDG_CONFIG_HOME/autostart/lucerna-<app>.desktop` cobre o login no KDE, no GNOME e no XFCE. No Hyprland sem systemd, ponha `exec-once = lucerna-<app> serve` na configuração.
+- Só enquanto houver um timer persistente marcado, o serviço mantém a entrada `$XDG_CONFIG_HOME/autostart/lucerna-<app>.desktop`, que o sobe no login do KDE, do GNOME e do XFCE para cumprir o que venceu com a sessão fechada; sem timer persistente, a entrada some e nada sobe no login. No Hyprland sem systemd, que não lê essa pasta, `exec-once = lucerna-<app> serve` na configuração faz esse papel (sem nada a fazer, o serviço sai por ociosidade).
 
 ## Ligação com o Lucerna
 
