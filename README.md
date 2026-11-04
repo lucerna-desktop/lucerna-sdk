@@ -115,7 +115,8 @@ Faz parte do ecossistema do [Lucerna](https://github.com/lucerna-desktop/lucerna
 ## Documentação
 
 - [`docs/superpowers/specs/2026-10-19-protocolo-design.md`](https://github.com/lucerna-desktop/lucerna-sdk/blob/main/docs/superpowers/specs/2026-10-19-protocolo-design.md): o spec do protocolo, do manifesto, do serviço e da linha de comando;
-- [`docs/ecossistema.md`](https://github.com/lucerna-desktop/lucerna-sdk/blob/main/docs/ecossistema.md): como os repositórios do ecossistema se encaixam.
+- [`docs/ecossistema.md`](https://github.com/lucerna-desktop/lucerna-sdk/blob/main/docs/ecossistema.md): como os repositórios do ecossistema se encaixam;
+- [`lucerna-sdk — Pendências.md`](https://github.com/lucerna-desktop/lucerna-sdk/blob/main/lucerna-sdk%20%E2%80%94%20Pend%C3%AAncias.md): o que falta fazer.
 
 ## Repositório
 
