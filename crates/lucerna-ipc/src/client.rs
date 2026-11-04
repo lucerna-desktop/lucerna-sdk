@@ -65,7 +65,11 @@ pub enum ClientError {
     Decode(serde_json::Error),
     /// [`Client::connect_or_spawn`] subiu o serviço, mas ele não atendeu no
     /// socket em [`SPAWN_WAIT`]. O porquê costuma estar no `log`.
-    #[error("O serviço não subiu em 2 s; veja o log em {}.", log.display())]
+    #[error(
+        "O serviço não subiu em {} s; veja o log em {}.",
+        SPAWN_WAIT.as_secs_f64(),
+        log.display()
+    )]
     NotStarted {
         /// O log do serviço subido.
         log: PathBuf,

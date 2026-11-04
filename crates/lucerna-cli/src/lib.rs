@@ -515,7 +515,8 @@ impl CliApp {
             ClientError::NotStarted { log } => self.no_service(
                 err,
                 &format!(
-                    "o serviço não subiu em 2 s; veja o log em {}.",
+                    "o serviço não subiu em {} s; veja o log em {}.",
+                    lucerna_ipc::SPAWN_WAIT.as_secs_f64(),
                     log.display()
                 ),
                 json,
