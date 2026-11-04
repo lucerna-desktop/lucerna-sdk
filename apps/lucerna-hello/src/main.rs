@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use lucerna_cli::{Invocation, usage_exit};
 use lucerna_hello::{cli, hello};
+use lucerna_service::Env;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -16,7 +17,7 @@ async fn main() -> ExitCode {
         Ok(Invocation::Tui(_)) => report(cli.clap().print_help()),
         Ok(Invocation::Serve) => {
             // O produtor do `ticks` vive até o serviço parar.
-            let h = hello();
+            let h = hello(&Env::from_process());
             let _producer = h.producer;
             report(h.service.run().await)
         }

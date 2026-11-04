@@ -108,7 +108,10 @@ fn cli_json_and_exit_codes() {
     let out = hello(t.path()).args(["--json", "status"]).output().unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&out.stdout).unwrap(),
-        json!({"counter":{"value":3}})
+        json!({
+            "counter": {"value": 3},
+            "reminder": {"at": null, "persistent": false, "last_fired": null},
+        })
     );
     // Chega ao máximo (3 + MAX - 3) e então passa dele.
     let out = hello(t.path())
