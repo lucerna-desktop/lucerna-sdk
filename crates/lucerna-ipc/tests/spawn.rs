@@ -133,13 +133,20 @@ async fn stale_socket_spawns_too() {
     let t = tempfile::tempdir().unwrap();
     let sock = t.path().join("demo.sock");
     // Um socket velho: o arquivo fica, ninguém atende (`ConnectionRefused`).
+    // Um `fork` de outra thread (os outros testes sobem scripts) pode herdar
+    // o fd de escuta até o `exec` dele; espera o socket ficar sem ninguém.
     drop(std::os::unix::net::UnixListener::bind(&sock).unwrap());
-    assert_eq!(
-        std::os::unix::net::UnixStream::connect(&sock)
-            .unwrap_err()
-            .kind(),
-        std::io::ErrorKind::ConnectionRefused
-    );
+    let start = Instant::now();
+    loop {
+        match std::os::unix::net::UnixStream::connect(&sock) {
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => break,
+            r => assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "o socket velho ainda atende: {r:?}"
+            ),
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let marca = t.path().join("marca");
     let prog = script(
         t.path(),
