@@ -1,4 +1,4 @@
-//! Timers agendados pelo systemd do usuário.
+//! Timers agendados pelo systemd do usuário, e a escolha do agendador.
 //!
 //! O app pede "me acorde em tal horário" com um [`TimerSpec`]; o
 //! [`SystemdScheduler`] escreve um `lucerna-<app>_<nome>.timer` e o liga com
@@ -7,10 +7,14 @@
 //! de fazê-lo (um `OnCalendar` com data fixa não volta a disparar, mas o
 //! arquivo ficaria).
 //!
-//! **O `lucerna-<app>.service` precisa estar instalado**: o systemd recusa
-//! ligar um timer cujo serviço não carrega, e o [`SystemdScheduler`] confere
-//! isso antes de escrever qualquer coisa
-//! ([`ScheduleError::ServiceNotInstalled`]).
+//! O systemd recusa ligar um timer cujo serviço não carrega, então o
+//! [`SystemdScheduler`] confere que o `lucerna-<app>.service` está instalado
+//! antes de escrever qualquer coisa e recusa se não estiver
+//! ([`ScheduleError::ServiceNotInstalled`]). O serviço, porém, não depende
+//! disso: ao subir, ele escolhe ([`choose_scheduler`]) o agendador do systemd
+//! quando ele serve e, senão, o [`LocalScheduler`](crate::local::LocalScheduler),
+//! que guarda os horários no próprio serviço. O app não precisa saber qual
+//! está em uso.
 //!
 //! - Persistente: o arquivo vai para `$XDG_CONFIG_HOME/systemd/user/` com
 //!   `Persistent=true` e é habilitado (`enable`), então sobrevive ao reinício e
@@ -55,8 +59,9 @@ pub trait Scheduler: Send + Sync {
     /// Agenda (ou reagenda) o timer `spec.name` para `spec.at_unix`.
     ///
     /// O horário precisa estar ao menos 2 s no futuro (`at_unix > agora + 1`),
-    /// senão [`ScheduleError::InPast`]: o app faz na hora o que já venceu. O
-    /// `lucerna-<app>.service` precisa estar instalado. Se a chamada falhar ao
+    /// senão [`ScheduleError::InPast`]: o app faz na hora o que já venceu. No
+    /// [`SystemdScheduler`], o `lucerna-<app>.service` precisa estar
+    /// instalado. Se a chamada falhar ao
     /// reagendar, o timer fica sem horário (o antigo foi desfeito): o app
     /// tenta de novo ou faz o trabalho na hora.
     fn schedule(&self, spec: &TimerSpec) -> Result<(), ScheduleError>;
@@ -97,7 +102,7 @@ pub enum ScheduleError {
 }
 
 /// Confere o nome do timer: `^[a-z0-9][a-z0-9-]{0,31}$`.
-fn validate_name(name: &str) -> Result<(), ScheduleError> {
+pub(crate) fn validate_name(name: &str) -> Result<(), ScheduleError> {
     let b = name.as_bytes();
     let ok = !b.is_empty()
         && b.len() <= 32
@@ -219,7 +224,7 @@ impl SystemdScheduler {
     }
 
     /// Confere com `systemctl --user show` que o serviço do app carrega.
-    fn check_service(&self) -> Result<(), ScheduleError> {
+    pub(crate) fn check_service(&self) -> Result<(), ScheduleError> {
         let service = self.service_unit();
         let out = self.systemctl(&["show", "-p", "LoadState", "--value", &service])?;
         if out.trim() == "loaded" {
@@ -262,25 +267,60 @@ impl SystemdScheduler {
     }
 }
 
-fn remove_if_exists(path: &Path) -> io::Result<()> {
+pub(crate) fn remove_if_exists(path: &Path) -> io::Result<()> {
     match std::fs::remove_file(path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
     }
 }
 
-fn now_unix() -> u64 {
+/// O relógio de parede, em segundos Unix.
+pub(crate) fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
+/// Confere que `at_unix` está ao menos 2 s depois de `now` (`at > now + 1`).
+pub(crate) fn check_future(at_unix: u64, now: u64) -> Result<(), ScheduleError> {
+    if at_unix <= now.saturating_add(1) {
+        Err(ScheduleError::InPast)
+    } else {
+        Ok(())
+    }
+}
+
+/// Qual agendador o serviço usa.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulerKind {
+    /// Os timers do systemd do usuário ([`SystemdScheduler`]).
+    Systemd,
+    /// O agendador do próprio serviço
+    /// ([`LocalScheduler`](crate::local::LocalScheduler)).
+    Local,
+}
+
+/// Escolhe o agendador do app `app`: [`SchedulerKind::Systemd`] quando
+/// `<systemctl> --user show -p LoadState --value lucerna-<app>.service`
+/// responde `loaded`; qualquer falha (id inválido, sem `systemctl`, sem o
+/// barramento da sessão, a unidade não instalada) dá
+/// [`SchedulerKind::Local`]. Não escreve nada.
+///
+/// Bloqueia até o `systemctl` terminar; dentro do `tokio`, chame de
+/// `tokio::task::spawn_blocking`.
+pub fn choose_scheduler(app: &str, env: &Env, systemctl: &Path) -> SchedulerKind {
+    match SystemdScheduler::new(app, env)
+        .and_then(|s| s.with_systemctl(systemctl.to_path_buf()).check_service())
+    {
+        Ok(()) => SchedulerKind::Systemd,
+        Err(_) => SchedulerKind::Local,
+    }
+}
+
 impl Scheduler for SystemdScheduler {
     fn schedule(&self, spec: &TimerSpec) -> Result<(), ScheduleError> {
         validate_name(&spec.name)?;
-        if spec.at_unix <= now_unix().saturating_add(1) {
-            return Err(ScheduleError::InPast);
-        }
+        check_future(spec.at_unix, now_unix())?;
         let dir = self.dir(spec.persistent)?;
         self.check_service()?;
         let unit = timer_unit_name(&self.app, &spec.name);

@@ -7,13 +7,15 @@
 //!
 //! Compõe o servidor do [`lucerna_ipc`] com a ativação pelo systemd (ou o socket
 //! criado à mão, no desenvolvimento), a saída por ociosidade e a conexão ao
-//! `shell.sock` ([`Shell`]) e os timers do systemd do usuário ([`schedule`]).
+//! `shell.sock` ([`Shell`]) e os timers agendados: os do systemd do usuário
+//! ([`schedule`]) ou, sem ele, os do agendador local ([`local`]).
 //!
 //! Com a feature `testing`, o módulo `testing` traz o `FakeShell` e o
 //! `FakeScheduler` para os testes dos apps (ligue-a em `[dev-dependencies]`).
 
 pub mod activation;
 pub mod idle;
+pub mod local;
 pub mod schedule;
 pub mod service;
 pub mod shell;
@@ -33,7 +35,12 @@ pub use lucerna_protocol::{BarItem, RpcError};
 
 pub use activation::{Activation, SocketGuard};
 pub use idle::{WorkGuard, WorkTracker};
-pub use schedule::{ScheduleError, Scheduler, SystemdScheduler, TimerSpec};
+#[doc(hidden)]
+pub use local::render_autostart;
+pub use local::{Fired, LocalScheduler, WAKE_STEP};
+pub use schedule::{
+    ScheduleError, Scheduler, SchedulerKind, SystemdScheduler, TimerSpec, choose_scheduler,
+};
 #[doc(hidden)]
 pub use schedule::{calendar_utc, render_timer, timer_unit_name};
 pub use service::{DEFAULT_IDLE, ServiceBuilder};
