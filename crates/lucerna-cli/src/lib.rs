@@ -10,7 +10,9 @@
 //! português.
 //!
 //! Códigos de saída: [`EXIT_OK`], [`EXIT_APP`], [`EXIT_NO_SERVICE`] e
-//! [`EXIT_USAGE`]; `--help`/`--version` saem com `0`.
+//! [`EXIT_USAGE`]; `--help`/`--version` saem com `0`. O `2` (sem serviço) só vem
+//! depois de a linha de comando tentar subir o serviço (`<bin> serve`, veja
+//! [`Spawn`]), a menos que a subida esteja desligada.
 
 pub mod render;
 
@@ -22,12 +24,12 @@ pub use lucerna_paths::Env;
 
 use std::ffi::OsString;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::error::ErrorKind;
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use lucerna_ipc::{Client, ClientError};
+use lucerna_ipc::{Client, ClientError, ServeCommand};
 use lucerna_paths::AppPaths;
 use lucerna_protocol::{RpcError, State, codes};
 use serde_json::{Map, Value};
@@ -48,6 +50,21 @@ pub const EXIT_USAGE: i32 = 64;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Prazo de cada chamada.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Variável de ambiente que, definida e não vazia, desliga a subida do serviço
+/// pela linha de comando.
+pub const NO_SPAWN_ENV: &str = "LUCERNA_NO_SPAWN";
+
+/// Como a linha de comando sobe o serviço quando ninguém atende no socket.
+#[derive(Clone, Debug)]
+pub enum Spawn {
+    /// Roda o próprio executável com `serve` (o padrão).
+    CurrentExe,
+    /// Roda este programa com `serve`.
+    Program(PathBuf),
+    /// Não sobe o serviço.
+    Never,
+}
 
 /// Nomes que o [`CliApp`] declara sozinho.
 const RESERVED: [&str; 4] = ["status", "watch", "serve", "tui"];
@@ -128,6 +145,7 @@ pub struct CliApp {
     version: String,
     about: String,
     commands: Vec<CliCommand>,
+    spawn: Spawn,
 }
 
 impl CliApp {
@@ -140,7 +158,14 @@ impl CliApp {
             version: version.to_string(),
             about: about.to_string(),
             commands: Vec::new(),
+            spawn: Spawn::CurrentExe,
         }
+    }
+
+    /// Escolhe como subir o serviço (padrão: [`Spawn::CurrentExe`]).
+    pub fn spawn(mut self, s: Spawn) -> Self {
+        self.spawn = s;
+        self
     }
 
     /// Acrescenta um subcomando do app.
@@ -277,7 +302,9 @@ impl CliApp {
     }
 
     /// Conecta ao serviço (`client` = `cli`), roda o subcomando e devolve o
-    /// código de saída. O resultado vai para `out`, as mensagens de erro para `err`.
+    /// código de saída. Se ninguém atende no socket, sobe o serviço antes
+    /// (veja [`Spawn`]; desligado com [`Spawn::Never`] ou com [`NO_SPAWN_ENV`]
+    /// definida e não vazia), e só então desiste com o código `2`. O resultado vai para `out`, as mensagens de erro para `err`.
     ///
     /// Com `--json`, todo erro sai em `err` como uma linha JSON e `out` fica vazio:
     /// erro do app (código `1`) como `{"error":{"code","message","data"?}}`; sem
@@ -298,7 +325,40 @@ impl CliApp {
             Ok(p) => p,
             Err(e) => return self.no_service(err, &e.to_string(), run.json),
         };
-        let client = match Client::connect_timeout(&path, "cli", &self.app, CONNECT_TIMEOUT).await {
+        let no_spawn = matches!(self.spawn, Spawn::Never)
+            || std::env::var_os(NO_SPAWN_ENV).is_some_and(|v| !v.is_empty());
+        let connected = if no_spawn {
+            Client::connect_timeout(&path, "cli", &self.app, CONNECT_TIMEOUT).await
+        } else {
+            let program = match &self.spawn {
+                Spawn::Program(p) => p.clone(),
+                _ => match std::env::current_exe() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let detail = format!("não deu para achar o executável: {e}.");
+                        return self.no_service(err, &detail, run.json);
+                    }
+                },
+            };
+            let log = match AppPaths::new(&self.app, env).and_then(|p| p.serve_log()) {
+                Ok(l) => l,
+                Err(e) => return self.no_service(err, &e.to_string(), run.json),
+            };
+            let serve = env
+                .vars()
+                .into_iter()
+                .fold(ServeCommand::new(program, log), |c, (k, v)| c.env(k, v));
+            match tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                Client::connect_or_spawn(&path, "cli", &self.app, &serve),
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => Err(ClientError::Timeout),
+            }
+        };
+        let client = match connected {
             Ok(c) => c,
             Err(e) => return self.fail(e, Stage::Connect(&path), run.json, err),
         };
@@ -452,10 +512,19 @@ impl CliApp {
             }
             ClientError::Closed => self.no_service(err, "o serviço fechou a conexão.", json),
             ClientError::Timeout => self.no_service(err, "tempo esgotado.", json),
-            // Provisório: a Tarefa 3 dá a cada um a sua mensagem.
-            ClientError::NotStarted { .. } | ClientError::Spawn { .. } => {
-                self.no_service(err, &e.to_string(), json)
-            }
+            ClientError::NotStarted { log } => self.no_service(
+                err,
+                &format!(
+                    "o serviço não subiu em 2 s; veja o log em {}.",
+                    log.display()
+                ),
+                json,
+            ),
+            ClientError::Spawn { program, source } => self.no_service(
+                err,
+                &format!("não deu para rodar {} serve: {source}.", program.display()),
+                json,
+            ),
             // No aperto de mão (versão incompatível, socket de outro app): não
             // dá para falar com este serviço.
             ClientError::Rpc(e) if matches!(stage, Stage::Connect(_)) => {

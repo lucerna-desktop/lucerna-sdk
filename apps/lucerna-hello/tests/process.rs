@@ -83,7 +83,11 @@ fn wait_exit(child: &mut Child, limite: Duration) -> Option<ExitStatus> {
 #[test]
 fn cli_json_and_exit_codes() {
     let t = tempfile::tempdir().unwrap();
-    let out = hello(t.path()).args(["status"]).output().unwrap();
+    let out = hello(t.path())
+        .env("LUCERNA_NO_SPAWN", "1")
+        .args(["status"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(2)); // ainda sem serviço
     assert!(
         String::from_utf8_lossy(&out.stderr).starts_with("Sem conexão com o serviço hello"),

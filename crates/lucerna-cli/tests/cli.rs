@@ -1,12 +1,13 @@
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::{Arg, Command, value_parser};
 use lucerna_cli::render::render_default;
-use lucerna_cli::{Call, CliApp, CliCommand, Invocation, usage_exit};
+use lucerna_cli::{Call, CliApp, CliCommand, Invocation, Spawn, usage_exit};
 use lucerna_ipc::{ServerBuilder, Topic};
 use lucerna_paths::Env;
 use lucerna_protocol::RpcError;
@@ -58,6 +59,7 @@ async fn service(dir: &Path) -> (Env, Topic, JoinHandle<()>) {
 
 fn app() -> CliApp {
     CliApp::new("demo", "demo", "0.1.0", "Demonstração.")
+        .spawn(Spawn::Never)
         .command(CliCommand {
             command: Command::new("add").about("Soma ao contador.").arg(
                 Arg::new("n")
@@ -117,7 +119,10 @@ impl Write for Shared {
 }
 
 async fn run(args: &[&str], env: &Env) -> (i32, String, String) {
-    let a = app();
+    run_with(&app(), args, env).await
+}
+
+async fn run_with(a: &CliApp, args: &[&str], env: &Env) -> (i32, String, String) {
     let Invocation::Cli(r) = a.parse_from(args).unwrap() else {
         panic!("não é um subcomando da linha de comando: {args:?}");
     };
@@ -635,4 +640,79 @@ fn render_default_rules() {
     assert_eq!(render_default(&json!(["um", "dois"])), "um\ndois");
     assert_eq!(render_default(&json!({"nome":"Ana"})), "nome: Ana");
     assert_eq!(render_default(&json!(3)), "3");
+}
+
+/// Escreve `body` num script `/bin/sh` em `dir/name`, com modo `0755`.
+fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn spawns_the_program_and_reaches_the_service() {
+    let t = tempfile::tempdir().unwrap();
+    let env = env_in(t.path());
+    let marca = t.path().join("marca");
+    let prog = script(
+        t.path(),
+        "demo",
+        &format!("echo \"$@ $XDG_RUNTIME_DIR\" > '{}'\n", marca.display()),
+    );
+    // Ao ver a marca, o teste sobe o serviço de sempre no socket.
+    let dir = t.path().to_path_buf();
+    let m = marca.clone();
+    let srv = tokio::spawn(async move {
+        while std::fs::read_to_string(&m).map_or(true, |s| !s.ends_with('\n')) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let (_env, topic, handle) = service(&dir).await;
+        (topic, handle)
+    });
+    let a = app().spawn(Spawn::Program(prog));
+    let (code, out, err) = run_with(&a, &["demo", "add", "2"], &env).await;
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "Contador: 2\n", ""));
+    assert_eq!(
+        std::fs::read_to_string(&marca).unwrap(),
+        format!("serve {}\n", t.path().join("run").display())
+    );
+    let (_topic, handle) = srv.await.unwrap();
+    handle.abort();
+}
+
+#[tokio::test]
+async fn program_that_never_serves_exits_2_with_the_log() {
+    let t = tempfile::tempdir().unwrap();
+    let env = env_in(t.path());
+    let prog = script(t.path(), "demo", "exit 0\n");
+    let a = app().spawn(Spawn::Program(prog));
+    let (code, out, err) = run_with(&a, &["demo", "status"], &env).await;
+    let log = t.path().join(".local/state/lucerna/demo/serve.log");
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert_eq!(
+        err,
+        format!(
+            "Sem conexão com o serviço demo: o serviço não subiu em 2 s; veja o log em {}.\n",
+            log.display()
+        )
+    );
+}
+
+#[tokio::test]
+async fn missing_program_exits_2_at_once() {
+    let t = tempfile::tempdir().unwrap();
+    let env = env_in(t.path());
+    let a = app().spawn(Spawn::Program(t.path().join("nao-existe")));
+    let start = std::time::Instant::now();
+    let (code, out, err) = run_with(&a, &["demo", "--json", "status"], &env).await;
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert_eq!((code, out.as_str()), (2, ""));
+    let v: Value = serde_json::from_str(&err).unwrap();
+    let msg = v["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.starts_with("Sem conexão com o serviço demo: não deu para rodar"),
+        "{msg}"
+    );
+    assert!(v["error"].get("code").is_none(), "{v}");
 }
