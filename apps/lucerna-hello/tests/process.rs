@@ -12,12 +12,17 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 /// O binário com um ambiente limpo: só `HOME`, `XDG_RUNTIME_DIR` e `PATH`.
+///
+/// O `PATH` é a pasta `dir/bin`, vazia: sem `systemctl`, o `serve` escolhe o
+/// agendador local e nunca chama o systemd da máquina.
 fn hello(dir: &Path) -> Command {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
     let mut c = Command::new(env!("CARGO_BIN_EXE_lucerna-hello"));
     c.env_clear()
         .env("HOME", dir)
         .env("XDG_RUNTIME_DIR", dir.join("run"))
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+        .env("PATH", bin);
     c
 }
 
