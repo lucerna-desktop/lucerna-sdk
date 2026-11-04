@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use lucerna_cli::{Invocation, usage_exit};
 use lucerna_hello::{cli, hello};
-use lucerna_service::Env;
+use lucerna_service::{Env, ServiceError};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -19,7 +19,12 @@ async fn main() -> ExitCode {
             // O produtor do `ticks` vive até o serviço parar.
             let h = hello(&Env::from_process());
             let _producer = h.producer;
-            report(h.service.run().await)
+            match h.service.run().await {
+                // Outro serviço já atende (perdeu a corrida para quem subiu
+                // junto): ele cuida de tudo; sai em silêncio.
+                Err(ServiceError::AlreadyRunning(_)) => 0,
+                r => report(r),
+            }
         }
         Ok(Invocation::Cli(run)) => cli.run_from_env(run).await,
         Err(e) => usage_exit(&e),
